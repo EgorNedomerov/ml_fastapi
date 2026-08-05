@@ -18,6 +18,13 @@ CATEGORICAL_COLUMNS = [
     "payment_method"
 ]
 
+INTEGER_COLUMNS = [
+    "support_requests",
+    "account_age_months",
+    "failed_payments",
+    "autopay_enabled"
+]
+
 TARGET_COLUMN = "churn"
 
 class ChurnDataset:
@@ -31,6 +38,9 @@ class ChurnDataset:
             raise FileNotFoundError(f"Файл датасета не найден: {self.file_path}")
 
         self.dataframe = pd.read_csv(self.file_path)
+
+        self._check_required_columns()
+        self._fill_missing_values()
 
         records = self.dataframe.to_dict(orient="records")
 
@@ -61,6 +71,9 @@ class ChurnDataset:
                 median_value = self.dataframe[column].median()
                 self.dataframe[column] = self.dataframe[column].fillna(median_value)
 
+        for column in INTEGER_COLUMNS:
+            self.dataframe[column] = self.dataframe[column].astype(int)
+
         for column in CATEGORICAL_COLUMNS:
             if self.dataframe[column].isna().sum() > 0:
                 self.dataframe[column] = self.dataframe[column].fillna("unknown")
@@ -80,8 +93,8 @@ class ChurnDataset:
             if hasattr(row, "model_dump"):
                 result.append(row.model_dump())
             else:
-                result.append(row.model_dump())
-
+                result.append(row.dict())
+            
         return result
 
     def info(self) -> dict:
@@ -118,18 +131,16 @@ class ChurnDataset:
         if self.dataframe.empty:
             self.load()
 
+        if self.dataframe.empty:
+            raise ValueError("Датасет пуст. Невозможно подготовить данные.")
+
         X = self.dataframe[NUMERIC_COLUMNS + CATEGORICAL_COLUMNS]
         y = self.dataframe[TARGET_COLUMN]
 
         return X, y
 
     def get_train_test_data(self, test_size: float = 0.2, random_state: int = 42):
-        if self.dataframe.empty:
-            self.load()
-
-        if self.dataframe.empty:
-            raise ValueError("Датасет пуст. Невозможно выполнить разбиение на train/test.")
-
+       
         X, y = self.prepare_data()
 
         X_train, X_test, y_train, y_test = train_test_split(

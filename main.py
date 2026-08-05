@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException, Query
-from models import FeatureVectorChurn
-from dataset_loader import ChurnDataset
+from fastapi import FastAPI, HTTPException, Query, Body
+from models import FeatureVectorChurn, PredictionResponseChurn
+from dataset_loader import ChurnDataset, NUMERIC_COLUMNS, CATEGORICAL_COLUMNS
 from model_trainer import evaluate_churn_model, train_churn_model, load_churn_model, save_churn_model
 from datetime import datetime
 from pathlib import Path
+import pandas as pd
 
 app = FastAPI()
 
@@ -36,13 +37,153 @@ if loaded_model_bundle is not None:
     model_state["test_size"] = metadata.get("test_size")
     model_state["random_state"] = metadata.get("random_state")
 
+def model_to_dict(model):
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+
+    return model.dict()
+
 @app.get("/")
 def root():
     return {"message": "ml churn service is running"}
 
-@app.post("/predict")
-def predict(features: FeatureVectorChurn):
-    return features
+@app.post("/predict",
+    response_model=PredictionResponseChurn,
+    responses={
+        200: {
+            "description": "Успешное предсказание churn",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "message": "prediction completed successfully",
+                        "model": "LogisticRegression",
+                        "count": 1,
+                        "predictions": [
+                            {
+                                "input_data": {
+                                    "monthly_fee": 49.99,
+                                    "usage_hours": 120.5,
+                                    "support_requests": 2,
+                                    "account_age_months": 14,
+                                    "failed_payments": 0,
+                                    "region": "europe",
+                                    "device_type": "mobile",
+                                    "payment_method": "card",
+                                    "autopay_enabled": 1
+                                },
+                                "predicted_churn": 0,
+                                "churn_probability": 0.2187,
+                                "class_probabilities": {
+                                    "0": 0.7813,
+                                    "1": 0.2187
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+        400: {
+            "description": "Модель ещё не обучена"
+        }
+    }
+)
+
+def predict(features: FeatureVectorChurn | list[FeatureVectorChurn] = Body(
+    ...,
+        openapi_examples={
+            "single_client": {
+                "summary": "Один клиент",
+                "value": {
+                    "monthly_fee": 49.99,
+                    "usage_hours": 120.5,
+                    "support_requests": 2,
+                    "account_age_months": 14,
+                    "failed_payments": 0,
+                    "region": "europe",
+                    "device_type": "mobile",
+                    "payment_method": "card",
+                    "autopay_enabled": 1
+                }
+            },
+            "several_clients": {
+                "summary": "Несколько клиентов",
+                "value": [
+                    {
+                        "monthly_fee": 9.99,
+                        "usage_hours": 18.4,
+                        "support_requests": 0,
+                        "account_age_months": 19,
+                        "failed_payments": 0,
+                        "region": "asia",
+                        "device_type": "desktop",
+                        "payment_method": "card",
+                        "autopay_enabled": 0
+                    },
+                    {
+                        "monthly_fee": 89.99,
+                        "usage_hours": 3.2,
+                        "support_requests": 5,
+                        "account_age_months": 2,
+                        "failed_payments": 2,
+                        "region": "america",
+                        "device_type": "mobile",
+                        "payment_method": "paypal",
+                        "autopay_enabled": 0
+                    }
+                ]
+            }
+        }
+    )
+):
+
+    pipeline = model_state["pipeline"]
+
+    if pipeline is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Модель ещё не обучена. Сначала выполните POST /model/train."
+        )
+    
+    if isinstance(features, list):
+        clients = features
+    else:
+        clients = [features]
+
+    input_records = []
+
+    for client in clients:
+        input_records.append(model_to_dict(client))
+
+    input_dataframe = pd.DataFrame(input_records)
+    input_dataframe = input_dataframe[NUMERIC_COLUMNS + CATEGORICAL_COLUMNS]
+
+    predicted_classes = pipeline.predict(input_dataframe)
+    predicted_probabilities = pipeline.predict_proba(input_dataframe)
+
+    prediction_results = []
+
+    for index, predicted_class in enumerate(predicted_classes):
+        class_probabilities = {}
+
+        for class_label, probability in zip(pipeline.classes_, predicted_probabilities[index]):
+            class_probabilities[str(int(class_label))] = round(float(probability), 4)
+
+        prediction_results.append(
+            {
+                "input_data": clients[index],
+                "predicted_churn": int(predicted_class),
+                "churn_probability": class_probabilities.get("1", 0.0),
+                "class_probabilities": class_probabilities
+            }
+        )
+
+    return {
+        "message": "prediction completed successfully",
+        "model": model_state["model"],
+        "count": len(prediction_results),
+        "predictions": prediction_results
+    }
 
 @app.get("/dataset/preview")
 def dataset_preview(limit: int = Query(5, ge=1, le=100)):
@@ -127,7 +268,7 @@ def model_train(
             "metrics": metrics,
             "model_saved": True,
             "model_file_path": str(MODEL_FILE_PATH),
-            "trained_at": trained_at,
+            "trained_at": trained_at
         }
 
     except FileNotFoundError as error:
