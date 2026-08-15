@@ -6,8 +6,58 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from dataset_loader import CATEGORICAL_COLUMNS, NUMERIC_COLUMNS
 from pathlib import Path
 import joblib
+from sklearn.ensemble import RandomForestClassifier
 
-def train_churn_model(X_train, y_train) -> Pipeline:
+def create_churn_model(
+    model_type: str,
+    hyperparameters: dict | None = None,
+    random_state: int = 42
+):
+    if hyperparameters is None:
+        hyperparameters = {}
+
+    normalized_model_type = model_type.lower().strip()
+
+    if normalized_model_type == "logreg":
+        used_hyperparameters = {
+            "max_iter": 1000
+        }
+
+        used_hyperparameters.update(hyperparameters)
+
+        try:
+            model = LogisticRegression(**used_hyperparameters)
+
+        except TypeError as error:
+            raise ValueError(
+                f"Некорректные hyperparameters для LogisticRegression: {error}"
+            )
+
+        return model, "LogisticRegression", normalized_model_type, used_hyperparameters
+
+    if normalized_model_type == "random_forest":
+        used_hyperparameters = {
+            "n_estimators": 100,
+            "random_state": random_state
+        }
+
+        used_hyperparameters.update(hyperparameters)
+
+        try:
+            model = RandomForestClassifier(**used_hyperparameters)
+
+        except TypeError as error:
+            raise ValueError(
+                f"Некорректные hyperparameters для RandomForestClassifier: {error}"
+            )
+
+        return model, "RandomForestClassifier", normalized_model_type, used_hyperparameters
+
+    raise ValueError(
+        "Неподдерживаемый model_type. Допустимые значения: logreg, random_forest."
+    )
+
+def train_churn_model(X_train, y_train, model_type: str = "logreg", hyperparameters: dict | None = None, random_state: int = 42 ) -> tuple[Pipeline, str, str, dict]:
 
     numeric_transformer = Pipeline(
         steps=[
@@ -28,7 +78,11 @@ def train_churn_model(X_train, y_train) -> Pipeline:
         ]
     )
 
-    model = LogisticRegression(max_iter=1000)
+    model, model_name, normalized_model_type, used_hyperparameters = create_churn_model(
+        model_type=model_type,
+        hyperparameters=hyperparameters,
+        random_state=random_state
+    )
 
     pipeline = Pipeline(
         steps=[
@@ -39,7 +93,7 @@ def train_churn_model(X_train, y_train) -> Pipeline:
 
     pipeline.fit(X_train, y_train)
 
-    return pipeline
+    return pipeline, model_name, normalized_model_type, used_hyperparameters
 
 
 def evaluate_churn_model(pipeline: Pipeline, X_test, y_test) -> dict:
@@ -54,7 +108,7 @@ def evaluate_churn_model(pipeline: Pipeline, X_test, y_test) -> dict:
         "f1": round(float(f1), 4)
     }
 
-def save_churn_model(pipeline: Pipeline, file_path: str, metadata: dict) -> None:
+def save_churn_model(pipeline: Pipeline, file_path: str | Path, metadata: dict) -> None:
 
     model_file_path = Path(file_path)
 
@@ -73,13 +127,20 @@ def save_churn_model(pipeline: Pipeline, file_path: str, metadata: dict) -> None
         model_file_path
     )
 
-def load_churn_model(file_path: str) -> dict | None:
+def load_churn_model(file_path: str | Path) -> dict | None:
 
     model_file_path = Path(file_path)
 
     if not model_file_path.exists():
         return None
 
-    model_bundle = joblib.load(model_file_path)
+    if model_file_path.stat().st_size == 0:
+        return None
+    
+    try:
+        model_bundle = joblib.load(model_file_path)
+
+    except EOFError:
+        return None
 
     return model_bundle

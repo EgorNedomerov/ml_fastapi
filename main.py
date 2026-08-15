@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException, Query, Body
-from models import FeatureVectorChurn, PredictionResponseChurn
+from models import FeatureVectorChurn, PredictionResponseChurn, TrainingConfigChurn
 from dataset_loader import ChurnDataset, NUMERIC_COLUMNS, CATEGORICAL_COLUMNS
 from model_trainer import evaluate_churn_model, train_churn_model, load_churn_model, save_churn_model
 from datetime import datetime
@@ -19,6 +19,8 @@ model_state = {
     "trained_at": None,
     "metrics": None,
     "model": None,
+    "model_type": None,
+    "hyperparameters": None,
     "model_file_path": str(MODEL_FILE_PATH),
     "test_size": None,
     "random_state": None
@@ -30,10 +32,13 @@ if loaded_model_bundle is not None:
     model_state["pipeline"] = loaded_model_bundle.get("pipeline")
 
     metadata = loaded_model_bundle.get("metadata", {})
+    
 
     model_state["trained_at"] = metadata.get("trained_at")
     model_state["metrics"] = metadata.get("metrics")
     model_state["model"] = metadata.get("model")
+    model_state["model_type"] = metadata.get("model_type")
+    model_state["hyperparameters"] = metadata.get("hyperparameters")
     model_state["test_size"] = metadata.get("test_size")
     model_state["random_state"] = metadata.get("random_state")
 
@@ -218,6 +223,32 @@ def dataset_split_info(
 
 @app.post("/model/train")
 def model_train(
+     config: TrainingConfigChurn = Body(
+        default=TrainingConfigChurn(),
+        openapi_examples={
+            "logistic_regression": {
+                "summary": "Logistic Regression",
+                "value": {
+                    "model_type": "logreg",
+                    "hyperparameters": {
+                        "max_iter": 1000,
+                        "class_weight": "balanced"
+                    }
+                }
+            },
+            "random_forest": {
+                "summary": "Random Forest",
+                "value": {
+                    "model_type": "random_forest",
+                    "hyperparameters": {
+                        "n_estimators": 100,
+                        "max_depth": 5,
+                        "random_state": 42
+                    }
+                }
+            }
+        }
+    ),
     test_size: float = Query(0.2, ge=0.1, le=0.5),
     random_state: int = Query(42)
 ):
@@ -228,8 +259,13 @@ def model_train(
             random_state=random_state
         )
 
-        trained_pipeline = train_churn_model(X_train, y_train)
-
+        (
+        trained_pipeline,
+        model_name,
+        normalized_model_type,
+        used_hyperparameters
+        ) = train_churn_model(X_train, y_train, model_type=config.model_type, hyperparameters=config.hyperparameters,  random_state=random_state)
+    
         metrics = evaluate_churn_model(
             pipeline=trained_pipeline,
             X_test=X_test,
@@ -241,7 +277,9 @@ def model_train(
         metadata = {
             "trained_at": trained_at,
             "metrics": metrics,
-            "model": "LogisticRegression",
+            "model": model_name,
+            "model_type": normalized_model_type,
+            "hyperparameters": used_hyperparameters,
             "test_size": test_size,
             "random_state": random_state,
             "train_rows": len(X_train),
@@ -253,14 +291,18 @@ def model_train(
         model_state["pipeline"] = trained_pipeline
         model_state["trained_at"] = trained_at
         model_state["metrics"] = metrics
-        model_state["model"] = "LogisticRegression"
+        model_state["model"] = model_name
+        model_state["model_type"] = normalized_model_type
+        model_state["hyperparameters"] = used_hyperparameters
         model_state["test_size"] = test_size
         model_state["random_state"] = random_state
         model_state["model_file_path"] = str(MODEL_FILE_PATH)
 
         return {
             "message": "model trained successfully",
-            "model": "LogisticRegression",
+            "model": model_name,
+            "model_type": normalized_model_type,
+            "hyperparameters": used_hyperparameters,
             "test_size": test_size,
             "random_state": random_state,
             "train_rows": len(X_train),
@@ -296,6 +338,8 @@ def model_status():
     return {
         "is_trained": is_trained,
         "model": model_state["model"],
+        "model_type": model_state["model_type"],
+        "hyperparameters": model_state["hyperparameters"],
         "trained_at": model_state["trained_at"],
         "metrics": model_state["metrics"],
         "model_file_path": model_state["model_file_path"],

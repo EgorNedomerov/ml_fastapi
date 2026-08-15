@@ -1,4 +1,6 @@
 from pydantic import BaseModel
+from typing import Any
+from pydantic import BaseModel, Field
 
 class FeatureVectorChurn(BaseModel):
     monthly_fee: float
@@ -35,3 +37,7 @@ class PredictionResponseChurn(BaseModel):
     model: str | None
     count: int
     predictions: list[PredictionItemChurn]
+
+class TrainingConfigChurn(BaseModel):
+    model_type: str = "logreg"
+    hyperparameters: dict[str, Any] = Field(default_factory=dict)
