@@ -1,11 +1,12 @@
-from fastapi import FastAPI, HTTPException, Query, Body
-from models import FeatureVectorChurn, PredictionResponseChurn, TrainingConfigChurn
-from dataset_loader import ChurnDataset, NUMERIC_COLUMNS, CATEGORICAL_COLUMNS
+from fastapi import FastAPI, HTTPException, Query, Body, Request
+from models import FeatureVectorChurn, PredictionResponseChurn, TrainingConfigChurn, ErrorResponseChurn
+from dataset_loader import ChurnDataset, NUMERIC_COLUMNS, CATEGORICAL_COLUMNS, FEATURE_COLUMNS, FEATURE_SCHEMA
 from model_trainer import evaluate_churn_model, train_churn_model, load_churn_model, save_churn_model
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
-
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 app = FastAPI()
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -33,7 +34,6 @@ if loaded_model_bundle is not None:
 
     metadata = loaded_model_bundle.get("metadata", {})
     
-
     model_state["trained_at"] = metadata.get("trained_at")
     model_state["metrics"] = metadata.get("metrics")
     model_state["model"] = metadata.get("model")
@@ -42,11 +42,67 @@ if loaded_model_bundle is not None:
     model_state["test_size"] = metadata.get("test_size")
     model_state["random_state"] = metadata.get("random_state")
 
+def build_error_response(code: str, message: str, details=None) -> dict:
+    return {"code": code,"message": message,"details": details}
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if isinstance(exc.detail, dict):
+        error_content = build_error_response(
+            code=exc.detail.get("code", f"HTTP_{exc.status_code}"),
+            message=exc.detail.get("message", "Ошибка HTTP-запроса."),
+            details=exc.detail.get("details")
+        )
+    else:
+        error_content = build_error_response(
+            code=f"HTTP_{exc.status_code}",
+            message=str(exc.detail),
+            details=None
+        )
+
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_content
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content=build_error_response(
+            code="VALIDATION_ERROR",
+            message="Некорректный формат запроса или неверные типы значений.",
+            details=exc.errors()
+        )
+    )
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    return JSONResponse(
+        status_code=400,
+        content=build_error_response(
+            code="DATA_PREPARATION_ERROR",
+            message=str(exc),
+            details=None
+        )
+    )
+
 def model_to_dict(model):
     if hasattr(model, "model_dump"):
         return model.model_dump()
 
     return model.dict()
+
+def build_prediction_dataframe(clients: list[FeatureVectorChurn]) -> pd.DataFrame:
+
+    input_records = []
+
+    for client in clients:
+        input_records.append(model_to_dict(client))
+
+    input_dataframe = pd.DataFrame(input_records)
+
+    return input_dataframe[FEATURE_COLUMNS]
 
 @app.get("/")
 def root():
@@ -89,11 +145,54 @@ def root():
             }
         },
         400: {
-            "description": "Модель ещё не обучена"
+            "description": "Ошибка предсказания",
+            "model": ErrorResponseChurn,
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "model_not_trained": {
+                            "summary": "Модель не обучена",
+                            "value": {
+                                "code": "MODEL_NOT_TRAINED",
+                                "message": "Модель ещё не обучена. Сначала выполните POST /model/train.",
+                                "details": None
+                            }
+                        },
+                        "prediction_error": {
+                            "summary": "Ошибка предсказания",
+                            "value": {
+                                "code": "PREDICTION_ERROR",
+                                "message": "Ошибка при выполнении предсказания churn.",
+                                "details": {
+                                    "error": "Описание ошибки"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        422: {
+            "description": "Ошибка валидации входных данных",
+            "model": ErrorResponseChurn,
+            "content": {
+                "application/json": {
+                    "example": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "Некорректный формат запроса или неверные типы значений.",
+                        "details": [
+                            {
+                                "loc": ["body", "monthly_fee"],
+                                "msg": "Field required",
+                                "type": "missing"
+                            }
+                        ]
+                    }
+                }
+            }
         }
     }
-)
-
+)    
 def predict(features: FeatureVectorChurn | list[FeatureVectorChurn] = Body(
     ...,
         openapi_examples={
@@ -141,31 +240,39 @@ def predict(features: FeatureVectorChurn | list[FeatureVectorChurn] = Body(
         }
     )
 ):
-
     pipeline = model_state["pipeline"]
 
     if pipeline is None:
         raise HTTPException(
             status_code=400,
-            detail="Модель ещё не обучена. Сначала выполните POST /model/train."
+            detail={
+                "code": "MODEL_NOT_TRAINED",
+                "message":"Модель ещё не обучена. Сначала выполните POST /model/train.",
+                "details": None
+            }
         )
-    
-    if isinstance(features, list):
-        clients = features
-    else:
-        clients = [features]
+    try:
+        if isinstance(features, list):
+            clients = features
+        else:
+            clients = [features]
 
-    input_records = []
+        input_dataframe = build_prediction_dataframe(clients)
 
-    for client in clients:
-        input_records.append(model_to_dict(client))
+        predicted_classes = pipeline.predict(input_dataframe)
+        predicted_probabilities = pipeline.predict_proba(input_dataframe)
 
-    input_dataframe = pd.DataFrame(input_records)
-    input_dataframe = input_dataframe[NUMERIC_COLUMNS + CATEGORICAL_COLUMNS]
-
-    predicted_classes = pipeline.predict(input_dataframe)
-    predicted_probabilities = pipeline.predict_proba(input_dataframe)
-
+    except Exception as error:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "PREDICTION_ERROR",
+                "message": "Ошибка при выполнении предсказания churn.",
+                "details": {
+                    "error": str(error)
+                }
+            }
+        )
     prediction_results = []
 
     for index, predicted_class in enumerate(predicted_classes):
@@ -221,7 +328,63 @@ def dataset_split_info(
         random_state=random_state
     )
 
-@app.post("/model/train")
+@app.post("/model/train",
+          responses={
+              200: {
+        "description": "Модель успешно обучена"
+    },
+    400: {
+        "description": "Ошибка конфигурации обучения",
+        "model": ErrorResponseChurn,
+        "content": {
+            "application/json": {
+                "examples": {
+                    "unsupported_model_type": {
+                        "summary": "Неподдерживаемый тип модели",
+                        "value": {
+                            "code": "TRAINING_CONFIG_ERROR",
+                            "message": "Неподдерживаемый model_type. Допустимые значения: logreg, random_forest.",
+                            "details": None
+                        }
+                    },
+                    "wrong_hyperparameter": {
+                        "summary": "Некорректный гиперпараметр",
+                        "value": {
+                            "code": "TRAINING_CONFIG_ERROR",
+                            "message": "Некорректные hyperparameters для RandomForestClassifier: ...",
+                            "details": None
+                        }
+                    }
+                }
+            }
+        }
+    },
+    404: {
+        "description": "Датасет не найден",
+        "model": ErrorResponseChurn,
+        "content": {
+            "application/json": {
+                "example": {
+                    "code": "DATASET_NOT_FOUND",
+                    "message": "Файл датасета не найден: ...",
+                    "details": {
+                        "dataset_path": "data/churn_dataset.csv"
+                    }
+                }
+            }
+        }
+    },
+    422: {
+        "description": "Ошибка валидации TrainingConfigChurn",
+        "model": ErrorResponseChurn
+    },
+    500: {
+        "description": "Ошибка обучения модели",
+        "model": ErrorResponseChurn
+    }
+}
+)
+
 def model_train(
      config: TrainingConfigChurn = Body(
         default=TrainingConfigChurn(),
@@ -316,19 +479,35 @@ def model_train(
     except FileNotFoundError as error:
         raise HTTPException(
             status_code=404,
-            detail=str(error)
+            detail={
+                "code": "DATASET_NOT_FOUND",
+                "message": str(error),
+                "details": {
+                    "dataset_path": str(DATASET_FILE_PATH)
+                }
+            }
         )
 
     except ValueError as error:
         raise HTTPException(
             status_code=400,
-            detail=str(error)
+            detail={
+                "code": "TRAINING_CONFIG_ERROR",
+                "message": str(error),
+                "details": None
+            }
         )
 
     except Exception as error:
         raise HTTPException(
             status_code=500,
-            detail=str(error)
+            detail={
+                "code": "MODEL_TRAINING_ERROR",
+                "message": "Ошибка при обучении модели churn.",
+                "details": {
+                    "error": str(error)
+                }
+            }
         )
 
 @app.get("/model/status")
@@ -345,4 +524,24 @@ def model_status():
         "model_file_path": model_state["model_file_path"],
         "test_size": model_state["test_size"],
         "random_state": model_state["random_state"]
+    }
+
+@app.get("/model/schema")
+def model_schema():
+    return {
+        "target": {
+            "name": "churn",
+            "type": "int",
+            "description": "Целевая переменная: 1 — клиент ушёл, 0 — клиент не ушёл"
+        },
+        "features": {
+            "all": FEATURE_COLUMNS,
+            "numeric": NUMERIC_COLUMNS,
+            "categorical": CATEGORICAL_COLUMNS
+        },
+        "feature_schema": FEATURE_SCHEMA,
+        "request_format": {
+            "single_client": "POST /predict принимает один объект FeatureVectorChurn",
+            "multiple_clients": "POST /predict принимает список объектов FeatureVectorChurn"
+        }
     }

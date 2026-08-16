@@ -13,7 +13,7 @@ NUMERIC_COLUMNS = [
 ]
 
 CATEGORICAL_COLUMNS = [
-     "region",
+    "region",
     "device_type",
     "payment_method"
 ]
@@ -26,6 +26,55 @@ INTEGER_COLUMNS = [
 ]
 
 TARGET_COLUMN = "churn"
+FEATURE_COLUMNS = NUMERIC_COLUMNS + CATEGORICAL_COLUMNS
+
+FEATURE_SCHEMA = {
+    "monthly_fee": {
+        "type": "float",
+        "description": "Ежемесячная стоимость подписки",
+        "example": 49.99
+    },
+    "usage_hours": {
+        "type": "float",
+        "description": "Количество часов использования сервиса",
+        "example": 120.5
+    },
+    "support_requests": {
+        "type": "int",
+        "description": "Количество обращений в поддержку",
+        "example": 2
+    },
+    "account_age_months": {
+        "type": "int",
+        "description": "Возраст аккаунта в месяцах",
+        "example": 14
+    },
+    "failed_payments": {
+        "type": "int",
+        "description": "Количество неуспешных платежей",
+        "example": 0
+    },
+    "autopay_enabled": {
+        "type": "int",
+        "description": "Включён ли автоплатёж: 1 — да, 0 — нет",
+        "example": 1
+    },
+    "region": {
+        "type": "str",
+        "description": "Регион клиента",
+        "example": "europe"
+    },
+    "device_type": {
+        "type": "str",
+        "description": "Тип устройства клиента",
+        "example": "mobile"
+    },
+    "payment_method": {
+        "type": "str",
+        "description": "Способ оплаты",
+        "example": "card"
+    }
+}
 
 class ChurnDataset:
     def __init__(self, file_path: str):
@@ -38,7 +87,9 @@ class ChurnDataset:
             raise FileNotFoundError(f"Файл датасета не найден: {self.file_path}")
 
         self.dataframe = pd.read_csv(self.file_path)
-
+        if self.dataframe.empty:
+            raise ValueError("Датасет пуст.")
+        
         self._check_required_columns()
         self._fill_missing_values()
 
@@ -54,7 +105,7 @@ class ChurnDataset:
 
     def _check_required_columns(self):
 
-        required_columns = NUMERIC_COLUMNS + CATEGORICAL_COLUMNS + [TARGET_COLUMN]
+        required_columns = FEATURE_COLUMNS + [TARGET_COLUMN]
 
         missing_columns = []
 
@@ -134,7 +185,7 @@ class ChurnDataset:
         if self.dataframe.empty:
             raise ValueError("Датасет пуст. Невозможно подготовить данные.")
 
-        X = self.dataframe[NUMERIC_COLUMNS + CATEGORICAL_COLUMNS]
+        X = self.dataframe[FEATURE_COLUMNS]
         y = self.dataframe[TARGET_COLUMN]
 
         return X, y
@@ -173,6 +224,7 @@ class ChurnDataset:
             "test_size": test_size,
             "random_state": random_state,
             "features": {
+                "all": FEATURE_COLUMNS,
                 "numeric": NUMERIC_COLUMNS,
                 "categorical": CATEGORICAL_COLUMNS,
                 "target": TARGET_COLUMN

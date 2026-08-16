@@ -1,8 +1,8 @@
-from pydantic import BaseModel
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 class FeatureVectorChurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     monthly_fee: float
     usage_hours: float
     support_requests: int
@@ -41,3 +41,8 @@ class PredictionResponseChurn(BaseModel):
 class TrainingConfigChurn(BaseModel):
     model_type: str = "logreg"
     hyperparameters: dict[str, Any] = Field(default_factory=dict)
+
+class ErrorResponseChurn(BaseModel):
+    code: str
+    message: str
+    details: dict[str, Any] | list[dict[str, Any]] | None = None
