@@ -1,6 +1,6 @@
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from dataset_loader import CATEGORICAL_COLUMNS, NUMERIC_COLUMNS
@@ -103,9 +103,23 @@ def evaluate_churn_model(pipeline: Pipeline, X_test, y_test) -> dict:
     accuracy = accuracy_score(y_test, predictions)
     f1 = f1_score(y_test, predictions)
 
+    roc_auc = None
+    
+    if hasattr(pipeline, "predict_proba") and len(set(y_test)) == 2:
+        predicted_probabilities = pipeline.predict_proba(X_test)
+
+        class_labels = list(pipeline.classes_)
+
+        if 1 in class_labels:
+            churn_class_index = class_labels.index(1)
+            churn_probabilities = predicted_probabilities[:, churn_class_index]
+
+            roc_auc = roc_auc_score(y_test, churn_probabilities)
+
     return {
         "accuracy": round(float(accuracy), 4),
-        "f1": round(float(f1), 4)
+        "f1": round(float(f1), 4),
+        "roc_auc": round(float(roc_auc), 4) if roc_auc is not None else None
     }
 
 def save_churn_model(pipeline: Pipeline, file_path: str | Path, metadata: dict) -> None:

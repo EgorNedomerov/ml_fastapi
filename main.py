@@ -5,6 +5,7 @@ from model_trainer import evaluate_churn_model, train_churn_model, load_churn_mo
 from datetime import datetime
 from pathlib import Path
 import pandas as pd
+import json
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 app = FastAPI()
@@ -12,6 +13,7 @@ app = FastAPI()
 BASE_DIR = Path(__file__).resolve().parent
 DATASET_FILE_PATH = BASE_DIR / "data" / "churn_dataset.csv"
 MODEL_FILE_PATH = BASE_DIR / "saved_models" / "churn_model.joblib"
+TRAINING_HISTORY_FILE_PATH = BASE_DIR / "saved_models" / "training_history.json"
 
 dataset = ChurnDataset(DATASET_FILE_PATH)
 
@@ -44,6 +46,18 @@ if loaded_model_bundle is not None:
 
 def build_error_response(code: str, message: str, details=None) -> dict:
     return {"code": code,"message": message,"details": details}
+
+def save_training_history(record: dict):
+    if TRAINING_HISTORY_FILE_PATH.exists():
+        with open(TRAINING_HISTORY_FILE_PATH, "r", encoding="utf-8") as file:
+            history = json.load(file)
+    else:
+        history = []
+
+    history.append(record)
+
+    with open(TRAINING_HISTORY_FILE_PATH, "w", encoding="utf-8") as file:
+        json.dump(history, file, indent=4)
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
@@ -450,6 +464,14 @@ def model_train(
         }
 
         save_churn_model(pipeline=trained_pipeline, file_path=MODEL_FILE_PATH, metadata=metadata)
+        
+        record = {
+            "timestamp": trained_at,
+            "model_type": normalized_model_type,
+            "hyperparameters": used_hyperparameters,
+            "metrics": metrics
+        }
+        save_training_history(record)
 
         model_state["pipeline"] = trained_pipeline
         model_state["trained_at"] = trained_at
@@ -544,4 +566,24 @@ def model_schema():
             "single_client": "POST /predict принимает один объект FeatureVectorChurn",
             "multiple_clients": "POST /predict принимает список объектов FeatureVectorChurn"
         }
+    }
+@app.get("/model/metrics")
+def model_metrics(limit: int = Query(5, ge=1),model_type: str | None = None):
+    
+    if TRAINING_HISTORY_FILE_PATH.exists():
+        with open(TRAINING_HISTORY_FILE_PATH, "r", encoding="utf-8") as file:
+            history = json.load(file)
+    else:
+        history = []
+
+    if model_type:
+        history = [
+            record for record in history
+            if record["model_type"] == model_type
+        ]
+
+    return {
+        "latest_training": history[-1] if history else None,
+        "recent_history": history[-limit:],
+        "total_records": len(history)
     }
